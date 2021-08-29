@@ -1,0 +1,57 @@
+{
+    "one": {
+        "fg_task_setting": [
+            {
+                "task": "None",
+                "type": "local"
+            }
+        ],
+        "bg_task_setting": [
+            {
+                "task": "None",
+                "type": "local"
+            }
+        ],
+        "task_setting": [
+            {
+                "task": "None",
+                "type": "local"
+            }
+        ]
+    },
+    "two": {
+        "fg_task_setting": [
+            {
+                "task": "None",
+                "type": "edge",
+                "server": 0
+            },{
+                "task": "None",
+                "type": "local"
+            }
+        ],
+        "bg_task_setting": [
+            {
+                "task": "None",
+                "type": "edge",
+                "server": 0
+            },
+            {
+                "task": "None",
+                "type": "local"
+            }
+        ],
+        "task_setting": [
+            {
+                "task": "None",
+                "type": "local"
+            },
+            {
+                "task": "None",
+                "type": "edge",
+                "server": 0
+            }
+        ]
+    }
+
+}
