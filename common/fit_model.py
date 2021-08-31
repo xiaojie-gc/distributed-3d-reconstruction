@@ -14,7 +14,7 @@ def fit(time_avg_small_obs, x=[], eva=[], gt=[]):
 
     popt, error = curve_fit(objective, x, time_avg_small_obs)
     a, b, c = popt
-    print('y = %.10f * x + %.10f * x**2 + %.10f' % (a, b, c))
+    print('y = %.15f * x + %.15f * x**2 + %.15f' % (a, b, c))
 
     pyplot.scatter(x, time_avg_small_obs, label='observation')
 
@@ -26,12 +26,14 @@ def fit(time_avg_small_obs, x=[], eva=[], gt=[]):
 
     print(mean_squared_error(pred, gt, squared=False))
 
-    pred = [objective(i, a/1.8, b/1.8, c/1.8) for i in eva]
-    pyplot.plot(eva, pred, '--', color='red', label='prediction')
+    #pred = [objective(i, a/1.8, b/1.8, c/1.8) for i in eva]
+    #pyplot.plot(eva, pred, '--', color='red', label='prediction')
 
     # pyplot.legend()
 
     # pyplot.show()
+
+    return  a, b, c
 
 def fit_return(time_avg_small_obs, x=[]):
     popt, error = curve_fit(objective, x, time_avg_small_obs)

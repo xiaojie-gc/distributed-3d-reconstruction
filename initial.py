@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 
-from common.functions import logger, bcolors
+from common.components import logger, bcolors
 
 
 def logger_parameters(args):

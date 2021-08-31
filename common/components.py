@@ -17,14 +17,10 @@ import numpy as np
 import open3d
 from common import write_bg as wbg, jsonToply
 from common.merge import merge
-from common.fit_model import fit_return
+from common.fit_model import fit_return, objective
+from common.networking import send_msg, recv_msg
 from detector import detect
-from datetime import datetime
-
-
-def logger(CURRENT="00000"):
-    now = datetime.now()  # current date and time
-    return now.strftime("%H:%M:%S") + "[LOG-\033[1m{}\033[0m] ".format(CURRENT)
+from common.logger import logger
 
 class bcolors:
     HEADER = '\033[95m'
@@ -187,32 +183,32 @@ def read_log(output_dir):
                             t = int(time_str[:-2]) * 0.001
                         else:
                             t = int(time_str[:-1]) * 0.001
-                times.append(t)
+                times.append(round(t, 4))
     return times, source_images
 
 
-def DensifyPointCloud_task(bg, bg_new, cp_time, pred_error, output_dir, n, max_r, str_timestamp, task_setting,
-                           server_channel, source_images, static_overhead, pred_fg_avg_time=None, pred_bg_avg_time=None,
-                           pred_avg_time=None):
+def DensifyPointCloud_task(worker, bg, bg_new, cp_time, pred_error, output_dir, n, max_r, str_timestamp, task_setting,
+                           server_channel, source_images, view_complexity, static_overhead, a, b, c,  b_ratio, avg_ratio, ba, bb, bc):
     start_densify = time.time()
     items = []
 
     if bg == 1:
-        item_local, item_edge = create_task(output_dir, max_r, str_timestamp, task_setting["fg_task_setting"],
-                                            "fg_mvs", [], [], pred_fg_avg_time,
-                                            server_channel=server_channel)
+        item_local, item_edge, pre_time = create_task(output_dir, max_r, str_timestamp, task_setting["fg_task_setting"],
+                                                      "fg_mvs", [], [], view_complexity, static_overhead, a, b, c,  b_ratio, avg_ratio, ba, bb, bc,
+                                                      server_channel=server_channel)
         tag = "[foreground"
         if bg_new == 1:
-            item_local, item_edge = create_task(output_dir, max_r, str_timestamp, task_setting["bg_task_setting"],
-                                                "bg_mvs",
-                                                item_local, item_edge, pred_bg_avg_time,
-                                                server_channel=server_channel)
+            item_local, item_edge, pre_time = create_task(output_dir, max_r, str_timestamp,
+                                                          task_setting["bg_task_setting"],
+                                                          "bg_mvs", item_local, item_edge, view_complexity, static_overhead, a, b, c,  b_ratio, avg_ratio, ba, bb, bc,
+                                                          server_channel=server_channel)
             tag += " + background]"
         else:
             tag += "]"
     else:
-        item_local, item_edge = create_task(output_dir, max_r, str_timestamp, task_setting["task_setting"],
-                                            "mvs", [], [], pred_avg_time, server_channel=server_channel)
+        item_local, item_edge, pre_time = create_task(output_dir, max_r, str_timestamp, task_setting["task_setting"],
+                                                      "mvs", [], [], view_complexity, static_overhead, a, b, c,  b_ratio, avg_ratio, ba, bb, bc,
+                                                      server_channel=server_channel)
         tag = ""
 
     if len(item_local) > 0:
@@ -226,7 +222,7 @@ def DensifyPointCloud_task(bg, bg_new, cp_time, pred_error, output_dir, n, max_r
 
     time_densify = {
         "total": round(time.time() - start_densify, 4),
-        "task": msa[0]
+        "pre_total": np.max(pre_time)
     }
 
     """
@@ -253,25 +249,37 @@ def DensifyPointCloud_task(bg, bg_new, cp_time, pred_error, output_dir, n, max_r
     """
     print(logger(str_timestamp) + json.dumps(msa, indent=4))
 
-    depth_map_time = 0
-    for hist in msa[0]['local']:
-        for label, value in hist.items():
-            pred_error[label].append(hist['error'])
-            static_overhead[label] = round(static_overhead[label] * 0.3 + hist['static_time'] * 0.7, 4)
-            source_images[label] = round(source_images[label] * 0.2 + hist['source_images'] * 0.8, 4)
-            print(logger(str_timestamp) + f"+ update static latency = {static_overhead[label]}, source images = {source_images[label]}")
-            print(logger(str_timestamp) + f"+ {label} pred error = {pred_error[label]}")
-            print(logger(str_timestamp) + f"+ average {label} pred error = {round(np.average(pred_error[label]), 2)}")
-            cp_time[label].append(round(hist['depth_map_time']/7, 3))
-            print(logger(str_timestamp), cp_time[label])
-            depth_map_time = hist['depth_map_time']
-            break
+    depth_map_time = {
+        "mvs": [],
+        "fg_mvs": [],
+        "bg_mvs": []
+    }
 
+    location = ['local', 'edge']
+    for i in range(worker):
+        for hist in msa[i][location[i]]:
+            for label, value in hist.items():
+                pred_error[location[i]][label].append(hist['error'])
+                static_overhead[i][label] = round(static_overhead[i][label] * 0.3 + hist['static_time'] * 0.7, 4)
+                source_images[label] = round(source_images[label] * 0.2 + hist['source_images'] * 0.8, 4)
+                cp_time[location[i]][label].append(round(hist['depth_map_time'], 3))
+                depth_map_time[label].append(hist['depth_map_time'])
+                break
+
+    #print(logger(
+    #    str_timestamp) + f"+ update static latency = {static_overhead[0][label]}, source images = {source_images[label]}")
+
+    print(logger(str_timestamp) + f"+ local {label} pred error = {pred_error['local'][label]}")
+    print(logger(str_timestamp) + f"+ edge {label} pred error = {pred_error['edge'][label]}")
+    print(logger(str_timestamp) + f"+ average local {label} pred error = {round(np.average(pred_error['local'][label]), 2)}")
+    print(logger(str_timestamp) + f"+ average edge {label} pred error = {round(np.average(pred_error['edge'][label]), 2)}")
+    print(logger(str_timestamp) + f"+ local depth-map time", cp_time['local'][label])
+    print(logger(str_timestamp) + f"+ edge depth-map time", cp_time['edge'][label])
     print(logger(
         str_timestamp) + f"+ {bcolors.OKGREEN}{tag} Densify{bcolors.ENDC}:{bcolors.WARNING}{bcolors.ENDC} in",
-          time_densify["total"])
+          time_densify)
 
-    return time_densify, msa, cp_time, tag, static_overhead, source_images, depth_map_time
+    return time_densify, tag, static_overhead, source_images, depth_map_time
 
 
 def create_new_dataset_cfg(output_dir, source_dir, n):
@@ -290,7 +298,8 @@ def create_new_dataset_cfg(output_dir, source_dir, n):
         json.dump(sfm, f, indent=4)
 
 
-def profile_bg(str_timestamp, reconstructor, bg_new, images_IDS, collect_dir, output_dir, fg_dir, bg_dir, subNet, obs_profile, profile=True):
+def profile_bg(str_timestamp, reconstructor, bg_new, images_IDS, collect_dir, output_dir, fg_dir, bg_dir, subNet,
+               obs_profile, profile=True):
     start_profile = time.time()
     settings = [
         {
@@ -310,88 +319,109 @@ def profile_bg(str_timestamp, reconstructor, bg_new, images_IDS, collect_dir, ou
             "class": None
         }
     ]
-    profile_resolution = [192, 240, 336, 432]
-    profile_resolution_base = [192, 240, 336, 432, 480, 576, 672] # [192, 240, 288, 336, 384, 432, 480, 576, 672, 768, 864, 960]
+    profile_resolution = [192, 240, 336, 432, 576, 864]
+    profile_resolution_base = [192, 240, 288, 336, 384, 432, 480, 576, 672, 768, 864, 960] # [192, 240, 288, 336, 384, 432, 480, 576, 672, 768, 864, 960]
     ratio = []
     base = True
-    for setting in settings:
-        items = []
-        msa = []
-        ratios = []
-        object_number = []
-        for ID in images_IDS:
-            items.append((0, os.path.join(collect_dir, ID + ".jpg"), os.path.join(fg_dir, ID + ".jpg"),
-                          os.path.join(bg_dir, ID + ".jpg"), subNet.model, subNet.imgsz, subNet.stride, subNet.half,
-                          subNet.device, setting['conf_thres'], setting['class'], subNet.opt))
+    ba, bb, bc, b_source = 0, 0, 0, 0
+    if profile is True:
+        for setting in settings:
+            items = []
+            msa = []
+            ratios = []
+            object_number = []
+            for ID in images_IDS:
+                items.append((0, os.path.join(collect_dir, ID + ".jpg"), os.path.join(fg_dir, ID + ".jpg"),
+                              os.path.join(bg_dir, ID + ".jpg"), subNet.model, subNet.imgsz, subNet.stride, subNet.half,
+                              subNet.device, setting['conf_thres'], setting['class'], subNet.opt))
 
-        with ThreadPoolExecutor(max_workers=len(items)) as executor:
-            results = executor.map(detect, items)
+            with ThreadPoolExecutor(max_workers=len(items)) as executor:
+                results = executor.map(detect, items)
 
-        for result in results:
-            msa.append(result[0])
-            ratios.append(result[1])
-            object_number.append(result[2])
+            for result in results:
+                msa.append(result[0])
+                ratios.append(result[1])
+                object_number.append(result[2])
 
-        ratio.append(round(np.average(ratios), 2))
+            ratio.append(round(np.average(ratios), 2))
 
-        """
-            obs_profile = {
-                "0.18": {
-                    "960": 0,
-                    "460": 0
-                },
-                "0.3" : {}        
-            }
-        """
+            obs_profile[str(ratio[-1])] = {}
 
-        obs_profile[str(ratio[-1])] = {}
-
-        print(logger(str_timestamp) + "+ find target views = {}".format(len(msa)))
-        print(logger(str_timestamp) + "+ number of RoI boxes = {}, avg={}".format(object_number, round(np.average(object_number), 2)))
-        print(logger(str_timestamp) + f"+ ratio of RoI areas = {ratio}, avg={bcolors.OKGREEN}{ratio[-1]}{bcolors.ENDC}")
-
-        time_split, L, B, F = point_cloud_plit(output_dir, bg_dir, fg_dir, msa)
-        time_split += opeMVG2openMVS(reconstructor, fg_dir, output_dir, "fg.bin", "fg_mvs")
-
-        resolution = profile_resolution if not base else profile_resolution_base
-        print(logger(str_timestamp) + f"+ start to profile ratio = {ratio[-1]}, resolution = {resolution}")
-        b_source_image = []
-        for r in resolution:
-            p = subprocess.Popen(
-                ["python3", reconstructor, collect_dir, output_dir, "--sfm", "sfm_data.bin", "--mvs_dir", "fg_mvs",
-                 "--preset", "DensifyPointCloud", "--tasks", "[000]-[006]", "--resolution", str(r), "--do_fuse", "0"])
-            p.wait()
-            times, source_images = read_log(output_dir + "/fg_mvs")
-            obs_profile[str(ratio[-1])][str(r)] = np.sum(times)
-            b_source_image.append(np.average(source_images))
-            test = os.listdir(output_dir + "/fg_mvs")
-            for item in test:
-                if item.endswith(".dmap") or item.endswith(".log"):
-                    os.remove(os.path.join(output_dir + "/fg_mvs", item))
-        if base:
-            ba, bb, bc = fit_return([obs_profile[str(ratio[-1])][str(r)] for r in resolution], resolution)
-            b_source = np.average(b_source_image)
+            print(logger(str_timestamp) + "+ find target views = {}".format(len(msa)))
+            print(logger(str_timestamp) + "+ number of RoI boxes = {}, avg={}".format(object_number,
+                                                                                      round(np.average(object_number),
+                                                                                            2)))
             print(logger(
-                str_timestamp) + f"+ fitted parameters ratio {ratio[-1]}, a={ba},b={bb},c={bc}")
-            base = False
+                str_timestamp) + f"+ ratio of RoI areas = {ratio}, avg={bcolors.OKGREEN}{ratio[-1]}{bcolors.ENDC}")
 
+            time_split, L, B, F = point_cloud_plit(output_dir, bg_dir, fg_dir, msa)
+            time_split += opeMVG2openMVS(reconstructor, fg_dir, output_dir, "fg.bin", "fg_mvs")
+
+            resolution = profile_resolution if not base else profile_resolution_base
+            print(logger(str_timestamp) + f"+ start to profile ratio = {ratio[-1]}, resolution = {resolution}")
+            b_source_image = []
+            for r in resolution:
+                p = subprocess.Popen(
+                    ["python3", reconstructor, collect_dir, output_dir, "--sfm", "sfm_data.bin", "--mvs_dir", "fg_mvs",
+                     "--preset", "DensifyPointCloud", "--tasks", "[000]-[006]", "--resolution", str(r), "--do_fuse",
+                     "0"])
+                p.wait()
+                times, source_images = read_log(output_dir + "/fg_mvs")
+                obs_profile[str(ratio[-1])][str(r)] = np.sum(times)
+                b_source_image.append(np.average(source_images))
+                test = os.listdir(output_dir + "/fg_mvs")
+                for item in test:
+                    if item.endswith(".dmap") or item.endswith(".log"):
+                        os.remove(os.path.join(output_dir + "/fg_mvs", item))
+            if base:
+                ba, bb, bc = fit_return([obs_profile[str(ratio[-1])][str(r)] for r in resolution], resolution)
+                b_source = np.average(b_source_image)
+                print(logger(
+                    str_timestamp) + f"+ fitted parameters ratio {ratio[-1]}, a={ba},b={bb},c={bc}")
+                base = False
+
+            print(logger(str_timestamp), json.dumps(obs_profile, indent=4))
+
+        print(logger(
+            str_timestamp) + f"+ profile in {round(time.time() - start_profile, 4)}")
+
+    return ratio, obs_profile, ba, bb, bc, b_source
+
+
+def fit_profile(str_timestamp, obs_profile, a, b, c):
+    profile_resolution_base = [192, 240, 288, 336, 384, 432, 480, 576, 672, 768, 864, 960]
     diff_ratio = []
-    for k in range(len(profile_resolution)):
+    profile_resolution = []
+    ratio = [item for item, value in obs_profile.items()]
+    for k in range(len(profile_resolution_base)):
         diff_time = []
         for i in range(len(ratio)):
             for j in range(i, len(ratio)):
-                if i != j:
-                    p = round(obs_profile[str(ratio[i])][str(profile_resolution[k])] - obs_profile[str(ratio[j])][
-                        str(profile_resolution[k])], 3)
-                    g = round(ratio[i] - ratio[j], 3) * 100
+                if i != j and str(profile_resolution_base[k]) in obs_profile[ratio[i]] and str(
+                        profile_resolution_base[k]) in \
+                        obs_profile[
+                            ratio[j]]:
+                    p = np.abs(round(obs_profile[ratio[i]][str(profile_resolution_base[k])] - obs_profile[ratio[j]][
+                        str(profile_resolution_base[k])], 3))
+                    g = np.abs(round(float(ratio[i]) - float(ratio[j]), 3) * 100)
                     diff_time.append(p / g)
-        diff_ratio.append(np.average(diff_time))
+        if len(diff_time) > 0:
+            diff_ratio.append(np.average(diff_time))
+            profile_resolution.append(profile_resolution_base[k])
 
-    a, b, c = fit_return(diff_ratio, profile_resolution)
+    if len(profile_resolution) > 0:
+        a1, b1, c1 = fit_return(diff_ratio, profile_resolution)
+        if a == 0:
+            a[0] = a1
+            b[0] = b1
+            c[0] = c1
+        else:
+            a[0] = 0.8 * a[0] + a1 * 0.2
+            b[0] = 0.8 * b[0] + b1 * 0.2
+            c[0] = 0.8 * c[0] + c1 * 0.2
+        print(logger(str_timestamp) + f"+ {bcolors.OKCYAN}fitted parameters{bcolors.ENDC} a={a},b={b},c={c}")
 
-    print(logger(str_timestamp) + f"+ fitted parameters a={a},b={b},c={c}, in {round(time.time() - start_profile, 4)}")
-
-    return a, b, c, obs_profile, ba, bb, bc, ratio[0], b_source
+    return a, b, c
 
 
 def profile(str_timestamp, reconstructor, collect_dir, output_dir, obs_profile, profile=True):
@@ -421,6 +451,7 @@ def profile(str_timestamp, reconstructor, collect_dir, output_dir, obs_profile, 
 
     a, b, c = fit_return(time_avg_small_obs, profile_resolution)
     print(logger(str_timestamp) + f"+ fitted parameters a={a},b={b},c={c}, in {round(time.time() - start_profile, 4)}")
+    print(time_avg_small_obs)
 
     for i in range(len(profile_resolution)):
         if obs_profile[str(profile_resolution[i])] == 0:
@@ -443,24 +474,53 @@ def opeMVG2openMVS(reconstructor, input_dir, output_dir, sfm_file, mvs_dir):
     return round(time.time() - start, 4)
 
 
-def create_task(output_dir, max_r, str_timestamp, task_setting, mvs_dir, item_local, item_edge, pred_time, server_channel=None):
+def create_task(output_dir, max_r, str_timestamp, task_setting, mvs_dir, item_local, item_edge, view_complexity, static_overhead, a, b, c,  b_ratio, avg_ratio, ba, bb, bc, server_channel=None):
     dir_mvs = output_dir + "/" + mvs_dir
     dir_img = output_dir + "/" + mvs_dir + "/images"
 
+    pred_times = []
     for i in range(len(task_setting)):
         if task_setting[i]["task"] == "":
             continue
         channel = None if task_setting[i]["type"] == "local" else server_channel[
             task_setting[i]["server"]]
-        values = (
-            max_r, task_setting[i]["task"],  dir_mvs, dir_img,
-            task_setting[i]["type"], str_timestamp, channel, mvs_dir, pred_time)
-        if task_setting[i]["type"] == "local":
-            item_local.append(values)
-        elif task_setting[i]["type"] == "edge":
-            item_edge.append(values)
 
-    return item_local, item_edge
+        task_begin = int(task_setting[i]["task"][1:4])
+        task_end = int(task_setting[i]["task"][7:10])
+
+        pred_time = 0
+        if mvs_dir == "mvs":
+            for t in range(task_begin, task_end + 1):
+                pred_time += objective(int(max_r), a[i], b[i], c[i]) * view_complexity[i][t]
+        else:
+            r_diff = round(avg_ratio - b_ratio, 3) * 100
+
+            diff = round(objective(int(max_r), a[i], b[i], c[i]), 4)
+
+            from_base = round(objective(int(max_r), ba, bb, bc), 4)
+
+            scale = 1 # source_images["fg_mvs"] / b_source
+
+            pred_time = round((diff * r_diff + from_base) * scale, 4)
+
+       # task_number = int(task_setting[i]["task"][7:10]) - int(task_setting[i]["task"][1:4]) + 1
+
+        pred_avg_depth_map_time = round(pred_time/(task_end - task_begin + 1), 4)
+
+        pred_time = round(pred_time + static_overhead[i][mvs_dir], 4)
+
+        pred_times.append(pred_time)
+
+        if task_setting[i]["type"] == "local":
+            item_local.append((
+                max_r, task_setting[i]["task"], dir_mvs, dir_img,
+                task_setting[i]["type"], str_timestamp, channel, mvs_dir, pred_time, pred_avg_depth_map_time))
+        elif task_setting[i]["type"] == "edge":
+            item_edge.append((
+                max_r, task_setting[i]["task"], dir_mvs, dir_img,
+                task_setting[i]["type"], str_timestamp, channel, mvs_dir, pred_time, pred_avg_depth_map_time))
+
+    return item_local, item_edge, pred_times
 
 
 def do_merge(fg_path, bg_path, output_path):
@@ -592,7 +652,7 @@ def DensifyPointCloud(items):
     time_densify = {}
 
     for values in items:
-        max_r, tasks, dir_mvs, dir_img, t_type, timestamp, server_channel, mvs_dir, pred_time = values
+        max_r, tasks, dir_mvs, dir_img, t_type, timestamp, server_channel, mvs_dir, pred_time, pred_avg_depth_map_time = values
 
         if t_type == "local":
             p = subprocess.Popen(
@@ -610,11 +670,13 @@ def DensifyPointCloud(items):
             actual_time = round(time.time() - densify_start, 4)
             densify_start = time.time()
 
-            error = round(np.abs(pred_time - actual_time), 4)
+            error = round(np.abs(pred_avg_depth_map_time -np.average(depth_map_time)), 4)
             time_densify[t_type].append({
                 mvs_dir: actual_time,
                 mvs_dir + "_pred": str(pred_time),
-                "depth_map_time": round(np.sum(depth_map_time), 4),
+                "depth_map_time": round(np.average(depth_map_time), 4),
+                "times": depth_map_time,
+                "pred_avg_depth_map_time": round(pred_avg_depth_map_time, 4),
                 "error": error,
                 "static_time": round(np.abs(np.sum(depth_map_time) - actual_time), 4),
                 "source_images": round(np.average(source_images), 4),
@@ -647,8 +709,10 @@ def DensifyPointCloud(items):
                 send_msg(server_channel, json.dumps(msg).encode("utf-8"))
 
                 # send task
+                # [009]-[015]
+                task_number = int(tasks[7:10]) - int(tasks[1:4]) + 1
 
-                msg = {"tasks": tasks, "task_number": task_number, "type": "task_info", "mvs_dir": mvs_dir,
+                msg = {"tasks": tasks,  "type": "task_info", "mvs_dir": mvs_dir,
                        "str_timestamp": timestamp, "max_r": max_r}
                 send_msg(server_channel, json.dumps(msg).encode("utf-8"))
 
@@ -661,23 +725,32 @@ def DensifyPointCloud(items):
                     with open(dir_mvs + "/" + info["file"], 'wb') as file:
                         file.write(base64.b64decode(info["data"]))
                     task += 1
-                    # print("\t get depthmap {}, remaining {}".format(info["file"], task_number - task))
-                    if task >= int(task_number):
-                        # break
-                        # server_channel.close()
-                        if t_type not in time_densify:
-                            time_densify[t_type] = []
-                        actual_time = round(time.time() - densify_start, 4)
-                        error = round(np.abs(pred_time - actual_time), 4)
-                        time_densify[t_type].append({
-                            mvs_dir: actual_time,
-                            mvs_dir + "_pred/error": str(pred_time) + f"/{error}",
-                            "tasks": tasks
-                        })
-                        pred_error[mvs_dir].append(error)
-                        densify_start = time.time()
-                    # print(" " + str(int(task_number) - task), end="")
+                    if task >= task_number:
                         break
+
+                data = recv_msg(server_channel)
+                info = json.loads(str(data.decode('utf-8')))
+
+                if t_type not in time_densify:
+                    time_densify[t_type] = []
+
+                actual_time = info["actual_time"]
+                error = round(np.abs(pred_avg_depth_map_time -np.average(info["depth_map_time"])), 4)
+
+                time_densify[t_type].append({
+                    mvs_dir: actual_time,
+                    mvs_dir + "_pred": str(pred_time),
+                    "depth_map_time": round(np.average(info["depth_map_time"]), 4),
+                    "pred_avg_depth_map_time": round(pred_avg_depth_map_time, 4),
+                    "times": info["depth_map_time"],
+                    "error": error,
+                    "static_time": round(np.abs(np.sum(info["depth_map_time"]) - actual_time), 4),
+                    "source_images": round(np.average(info["source_images"]), 4),
+                    "tasks": tasks
+                })
+                densify_start = time.time()
+                break
+
             except:
                 print(traceback.format_exc())
                 print(logger() + "port: disconnected")

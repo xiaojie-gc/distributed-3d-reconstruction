@@ -2,8 +2,7 @@ import socket
 import struct
 import threading
 import time
-
-from common import functions
+from common.logger import logger
 
 
 def recv_msg(c):

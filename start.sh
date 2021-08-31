@@ -5,10 +5,10 @@ then
     python3 main.py --data_dir data/originals --bg 1 --bg_new 0 --worker 2 --max_r 1280 --time 0 --n 7 --edge_fg [000]-[003] --local_fg [004]-[006]
 elif (($1 == 2))
 then
-    python3 main.py --data_dir data/originals --bg 1 --bg_new 1 --worker 2 --max_r 960 --time 0 --n 7 --edge_fg [000]-[003] --local_fg [004]-[006] --edge_bg [000]-[003] --local_bg [004]-[006]
+    python3 main.py --data_dir data/originals --bg 1 --bg_new 1 --worker 2 --max_r 960 --time 0 --n 7 --edge_fg [000]-[003] --local_fg [004]-[006] --edge_bg [000]-[003] --local_bg [004]-[006] --edge [000]-[002]
 elif (($1 == 3))
 then
-    python3 main.py --data_dir /media/zxj/easystore/Dance1/data/originals --source_dir data/Family --profile 0 --new_cfg 0 --bg 0 --bg_new 0 --worker 1 --max_r 960  --time 0 --n 7 --local [000]-[006]
+    python3 main.py --data_dir /media/zxj/easystore/Dance1/data/originals --source_dir data/Family --profile 1 --new_cfg 0 --bg 0 --bg_new 0 --worker 1 --max_r 960  --time 0 --n 7  --local [000]-[006]
 elif (($1 == 4))
 then
     python3 main.py --data_dir /media/zxj/easystore/Dance1/data/originals --bg 1 --bg_new 0 --profile 0 --worker 1 --max_r 960  --time 0 --n 7 --local_fg [000]-[006] --local_bg [000]-[006]
